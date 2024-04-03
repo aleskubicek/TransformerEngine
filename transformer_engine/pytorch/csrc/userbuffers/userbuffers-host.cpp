@@ -9,7 +9,7 @@
 #include <chrono>
 #include <cuda_runtime.h>
 #include <cuda_runtime_api.h>
-#include <immintrin.h>
+//#include <immintrin.h>
 #include <iostream>
 #include <math.h>
 #include <mpi.h>
@@ -17,7 +17,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <unistd.h>
-#include <x86intrin.h>
+//#include <x86intrin.h>
 
 static int oob_bcast(void *comm_context, void *buf, int size, int root) {
   MPI_Bcast(buf, size, MPI_BYTE, root,
@@ -260,7 +260,7 @@ int create_communicator_grouped2(communicator **comm, int pipegpus, int pipenode
                            (NVTE_MAX_SMS + 100) * sizeof(int)));
   for (int i = 0; i < 100 + NVTE_MAX_SMS; i++)
     (*comm)->hostflags[i] = 0;
-  _mm_mfence();
+//  _mm_mfence();
   sleep(1);
 
   // init_p2p_transport();
