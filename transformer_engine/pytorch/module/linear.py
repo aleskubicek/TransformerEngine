@@ -47,6 +47,7 @@ from ..constants import GemmParallelModes, dist_group_type
 from ..jit import no_torch_dynamo
 from ..graph import is_graph_capturing
 from ..float8_tensor import Float8Tensor
+from ..timer import CudaEventTimer, CudaEventTimerCollection
 
 _NVTE_DEBUG = int(os.getenv("NVTE_DEBUG", "0"))
 
@@ -147,9 +148,16 @@ class _Linear(torch.autograd.Function):
                         fp8_dtype_forward,
                     )
 
+        ag_timer = CudaEventTimer("forward_allgather")
+        gemm_timer = CudaEventTimer("forward_gemm")
+        rs_timer = CudaEventTimer("forward_reducescatter")
+        CudaEventTimerCollection.extend([ag_timer, gemm_timer, rs_timer])
+
         # Column Parallel Linear
         if parallel_mode == "column" and sequence_parallel:
+            ag_timer.start()
             inputmat_total, _ = gather_along_first_dim(inputmat, tp_group)
+            ag_timer.stop()
         else:
             inputmat_total = inputmat
         if fp8:
@@ -299,6 +307,7 @@ class _Linear(torch.autograd.Function):
                 dim_size[1] = weight.size(0)
                 out = torch.empty(dim_size, dtype=activation_dtype, device=inputmat_total.device)
 
+            gemm_timer.start()
             _ = gemm(
                 weight,
                 inputmat_total,
@@ -311,6 +320,7 @@ class _Linear(torch.autograd.Function):
                 ub=ub_obj_projout if ub_overlap_rs else None,
                 extra_output_tensor=rs_out if ub_overlap_rs else None,
             )
+            gemm_timer.stop()
 
         if is_grad_enabled:
             saved_inputmat = None
@@ -373,7 +383,9 @@ class _Linear(torch.autograd.Function):
         if ub_overlap_rs:
             out = rs_out
         elif parallel_mode == "row" and sequence_parallel:
+            rs_timer.start()
             out, _ = reduce_scatter_along_first_dim(out, tp_group)
+            rs_timer.stop()
         elif parallel_mode == "row" and tensor_parallel:
             out, _ = allreduce(out, tp_group)
 
