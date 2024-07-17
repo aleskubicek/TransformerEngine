@@ -50,6 +50,6 @@ class CudaEventTimerCollection:
             raise ValueError("NVTE_LOG_PATH is not set")
         file_path = f"{path}/NVTE_TP_{rank}_{local_rank}.txt"
         with open(os.path.abspath(file_path), "a") as f:
-            for iteration, iteration_timers in my_dict.items():
+            for iteration, iteration_timers in CudaEventTimerCollection.timers.items():
                 for timer in iteration_timers:
                     f.write(f"{iteration} {timer.name} {timer.elapsed_time()}\n")
