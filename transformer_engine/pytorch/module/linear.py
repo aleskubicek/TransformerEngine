@@ -148,16 +148,14 @@ class _Linear(torch.autograd.Function):
                         fp8_dtype_forward,
                     )
 
-        ag_timer = CudaEventTimer("forward_allgather")
-        gemm_timer = CudaEventTimer("forward_gemm")
-        rs_timer = CudaEventTimer("forward_reducescatter")
-        CudaEventTimerCollection.extend([ag_timer, gemm_timer, rs_timer])
 
         # Column Parallel Linear
         if parallel_mode == "column" and sequence_parallel:
-            ag_timer.start()
+            timer = CudaEventTimer("forward_CPL_allgather")
+            CudaEventTimerCollection.append(timer)
+            timer.start()
             inputmat_total, _ = gather_along_first_dim(inputmat, tp_group)
-            ag_timer.stop()
+            timer.stop()
         else:
             inputmat_total = inputmat
         if fp8:
@@ -307,7 +305,9 @@ class _Linear(torch.autograd.Function):
                 dim_size[1] = weight.size(0)
                 out = torch.empty(dim_size, dtype=activation_dtype, device=inputmat_total.device)
 
-            gemm_timer.start()
+            timer = CudaEventTimer("forward_gemm")
+            CudaEventTimerCollection.append(timer)
+            timer.start()
             _ = gemm(
                 weight,
                 inputmat_total,
@@ -320,7 +320,7 @@ class _Linear(torch.autograd.Function):
                 ub=ub_obj_projout if ub_overlap_rs else None,
                 extra_output_tensor=rs_out if ub_overlap_rs else None,
             )
-            gemm_timer.stop()
+            timer.stop()
 
         if is_grad_enabled:
             saved_inputmat = None
@@ -383,9 +383,11 @@ class _Linear(torch.autograd.Function):
         if ub_overlap_rs:
             out = rs_out
         elif parallel_mode == "row" and sequence_parallel:
-            rs_timer.start()
+            timer = CudaEventTimer("forward_RPL_reducescatter")
+            CudaEventTimerCollection.append(timer)
+            timer.start()
             out, _ = reduce_scatter_along_first_dim(out, tp_group)
-            rs_timer.stop()
+            timer.stop()
         elif parallel_mode == "row" and tensor_parallel:
             out, _ = allreduce(out, tp_group)
 
@@ -451,9 +453,13 @@ class _Linear(torch.autograd.Function):
             inputmat_t_total = None
             handle = None
             if weight.requires_grad and ctx.parallel_mode == "column" and ctx.sequence_parallel:
+                timer = CudaEventTimer("backward_CPL_allgather")
+                CudaEventTimerCollection.append(timer)
+                timer.start()
                 inputmat_total, handle = gather_along_first_dim(
                     inputmat, ctx.tp_group, async_op=ctx.requires_dgrad
                 )
+                timer.stop()
             else:
                 inputmat_total = inputmat
                 inputmat_t_total = inputmat_t
@@ -517,6 +523,9 @@ class _Linear(torch.autograd.Function):
                     if _NVTE_DEBUG:
                         print('[Linear]: using non-FP8 backward')
 
+                    timer = CudaEventTimer("backward_gemm")
+                    CudaEventTimerCollection.append(timer)
+                    timer.start()
                     dgrad, _, _ = gemm(
                         weight,
                         grad_output,
@@ -528,14 +537,19 @@ class _Linear(torch.autograd.Function):
                             if ctx.ub_overlap_ag else None,
                         ub=ctx.ub_obj_gradout if ctx.ub_overlap_ag else None,
                     )
+                    timer.stop()
 
                 # Overlap dgrad-RS/AR with wgrad
                 if ctx.parallel_mode == "column" and ctx.sequence_parallel:
                     if handle is not None:
                         handle.wait()
+                    timer = CudaEventTimer("backward_CPL_reducescatter")
+                    CudaEventTimerCollection.append(timer)
+                    timer.start()
                     dgrad, handle = reduce_scatter_along_first_dim(
                         dgrad, ctx.tp_group, async_op=True
                     )
+                    timer.stop()
                 elif ctx.parallel_mode == "column" and ctx.tensor_parallel:
                     dgrad, handle = allreduce(dgrad, ctx.tp_group, async_op=True)
 
@@ -583,6 +597,9 @@ class _Linear(torch.autograd.Function):
                         )
                 else:
                     # WGRAD
+                    timer = CudaEventTimer("backward_gemm")
+                    CudaEventTimerCollection.append(timer)
+                    timer.start()
                     wgrad, grad_bias, _ = gemm(
                         inputmat_total,
                         grad_output,
@@ -594,6 +611,7 @@ class _Linear(torch.autograd.Function):
                         accumulate=accumulate_wgrad_into_param_main_grad,
                         out=weight.main_grad if ctx.fuse_wgrad_accumulation else None,
                     )
+                    timer.stop()
 
                 # Deallocate input tensor
                 clear_tensor_data(inputmat_total)

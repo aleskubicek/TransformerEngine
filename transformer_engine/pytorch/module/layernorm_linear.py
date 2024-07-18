@@ -44,6 +44,8 @@ from ..jit import no_torch_dynamo
 from ..graph import is_graph_capturing
 from ._common import _apply_normalization, _noop_cat
 from ..float8_tensor import Float8Tensor
+from ..timer import CudaEventTimer, CudaEventTimerCollection
+
 _NVTE_DEBUG = int(os.getenv("NVTE_DEBUG", "0"))
 
 __all__ = ["LayerNormLinear"]
@@ -157,7 +159,11 @@ class _LayerNormLinear(torch.autograd.Function):
                 ub_algo = tex.UbufOverlapAlgo.SPLIT_PIPELINED_AG_P2P
         elif parallel_mode == "column" and sequence_parallel:
             ln_out_gathered = True
+            timer = CudaEventTimer("forward_CPL_allgather")
+            CudaEventTimerCollection.append(timer)
+            timer.start()
             ln_out_total, _ = gather_along_first_dim(ln_out, tp_group)
+            timer.stop()
         else:
             ln_out_total = ln_out
 
@@ -291,6 +297,9 @@ class _LayerNormLinear(torch.autograd.Function):
                 fp8_meta["scaling_fwd"].amax_history[0][tex.FP8FwdTensors.GEMM1_WEIGHT] = \
                     torch.max(-amin, amax).float()
 
+            timer = CudaEventTimer("forward_gemm")
+            CudaEventTimerCollection.append(timer)
+            timer.start()
             out, _, _ = tex.gemm(
                 weight,
                 ln_out_total,
@@ -302,6 +311,7 @@ class _LayerNormLinear(torch.autograd.Function):
                 ub=ub_obj_lnout if ub_overlap_ag else None,
                 extra_output_tensor=ln_out if ub_overlap_ag else None,
             )
+            timer.stop()
 
         if is_grad_enabled:
             if cpu_offloading:
@@ -364,7 +374,11 @@ class _LayerNormLinear(torch.autograd.Function):
 
         # Row Parallel Linear
         if parallel_mode == "row" and sequence_parallel:
+            timer = CudaEventTimer("forward_RPL_reducescatter")
+            CudaEventTimerCollection.append(timer)
+            timer.start()
             out, _ = reduce_scatter_along_first_dim(out, tp_group)
+            timer.stop()
         elif parallel_mode == "row" and tensor_parallel:
             out, _ = allreduce(out, tp_group)
 
@@ -449,9 +463,13 @@ class _LayerNormLinear(torch.autograd.Function):
                 and (not ctx.ub_bulk_dgrad)
                 and ctx.parallel_mode == "column"
                 and ctx.sequence_parallel):
+                timer = CudaEventTimer("backward_CPL_allgather")
+                CudaEventTimerCollection.append(timer)
+                timer.start()
                 ln_out_total, handle = gather_along_first_dim(
                     ln_out, ctx.tp_group, async_op=True
                 )
+                timer.stop()
             else:
                 ln_out_total = ln_out
                 handle = None
@@ -546,6 +564,9 @@ class _LayerNormLinear(torch.autograd.Function):
                     print('[LayerNormLinear]: using non-FP8 backward')
 
                 # DGRAD: Evaluated unconditionally to feed into Linear backward
+                timer = CudaEventTimer("backward_gemm")
+                CudaEventTimerCollection.append(timer)
+                timer.start()
                 _, _, _ = tex.gemm(
                     weight,
                     grad_output,
@@ -558,6 +579,7 @@ class _LayerNormLinear(torch.autograd.Function):
                     ub=ub_obj,
                     extra_output_tensor=rs_out if ctx.ub_overlap_rs_dgrad else None,
                 )
+                timer.stop()
             if ctx.ub_bulk_dgrad:
                 ln_out_total = ub_obj_lnout.get_ubuf_output(1)
 
@@ -568,9 +590,13 @@ class _LayerNormLinear(torch.autograd.Function):
                 if not ctx.ub_bulk_wgrad and not ctx.ub_overlap_rs_dgrad:
                     if ctx.return_layernorm_output and ctx.return_layernorm_output_gathered:
                         dgrad = dgrad + grad_outputs[1].view_as(dgrad)
+                    timer = CudaEventTimer("backward_CPL_reducescatter")
+                    CudaEventTimerCollection.append(timer)
+                    timer.start()
                     dgrad, handle = reduce_scatter_along_first_dim(
                         dgrad, ctx.tp_group, async_op=True
                     )
+                    timer.stop()
             elif ctx.parallel_mode == "column" and ctx.tensor_parallel:
                 dgrad, handle = allreduce(dgrad, ctx.tp_group, async_op=True)
 
@@ -634,6 +660,9 @@ class _LayerNormLinear(torch.autograd.Function):
                         clear_tensor_data(ln_out_total_c)
                 else:
                     # WGRAD
+                    timer = CudaEventTimer("backward_gemm")
+                    CudaEventTimerCollection.append(timer)
+                    timer.start()
                     wgrad, grad_bias, _ = tex.gemm(
                         ln_out_total,
                         grad_output,
@@ -647,6 +676,7 @@ class _LayerNormLinear(torch.autograd.Function):
                         ub_algo=tex.UbufOverlapAlgo.BULK_OVERLAP_RS if ctx.ub_bulk_wgrad else None,
                         ub=ub_obj_dgrad if ctx.ub_bulk_wgrad else None
                     )
+                    timer.stop()
                     clear_tensor_data(ln_out_total)
                     if ctx.ub_bulk_wgrad:
                         dgrad = ub_obj_dgrad.get_ubuf_output(0) # Reduce-scatter output
