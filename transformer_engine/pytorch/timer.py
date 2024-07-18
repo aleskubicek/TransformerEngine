@@ -44,7 +44,6 @@ class CudaEventTimerCollection:
     @staticmethod
     def output() -> None:
         torch.cuda.synchronize()
-        print("AK Debug: output timers")
         rank = int(os.environ.get("RANK", -1))
         local_rank = int(os.environ.get("LOCAL_RANK", -1))
         path = os.environ.get("NVTE_LOG_PATH", "")
