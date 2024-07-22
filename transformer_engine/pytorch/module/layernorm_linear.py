@@ -565,7 +565,7 @@ class _LayerNormLinear(torch.autograd.Function):
                     print('[LayerNormLinear]: using non-FP8 backward')
 
                 # DGRAD: Evaluated unconditionally to feed into Linear backward
-                timer_name = "backward_CPL_gemm" if parallel_mode == "column" else "backward_RPL_gemm"
+                timer_name = "backward_CPL_gemm" if ctx.parallel_mode == "column" else "backward_RPL_gemm"
                 timer = CudaEventTimer(timer_name)
                 CudaEventTimerCollection.append(timer)
                 timer.start()
@@ -662,7 +662,7 @@ class _LayerNormLinear(torch.autograd.Function):
                         clear_tensor_data(ln_out_total_c)
                 else:
                     # WGRAD
-                    timer_name = "backward_CPL_gemm" if parallel_mode == "column" else "backward_RPL_gemm"
+                    timer_name = "backward_CPL_gemm" if ctx.parallel_mode == "column" else "backward_RPL_gemm"
                     timer = CudaEventTimer(timer_name)
                     CudaEventTimerCollection.append(timer)
                     timer.start()
