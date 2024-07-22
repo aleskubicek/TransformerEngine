@@ -305,7 +305,8 @@ class _Linear(torch.autograd.Function):
                 dim_size[1] = weight.size(0)
                 out = torch.empty(dim_size, dtype=activation_dtype, device=inputmat_total.device)
 
-            timer = CudaEventTimer("forward_gemm")
+            timer_name = "forward_CPL_gemm" if parallel_mode == "column" else "forward_RPL_gemm"
+            timer = CudaEventTimer(timer_name)
             CudaEventTimerCollection.append(timer)
             timer.start()
             _ = gemm(
@@ -523,7 +524,8 @@ class _Linear(torch.autograd.Function):
                     if _NVTE_DEBUG:
                         print('[Linear]: using non-FP8 backward')
 
-                    timer = CudaEventTimer("backward_gemm")
+                    timer_name = "backward_CPL_gemm" if parallel_mode == "column" else "backward_RPL_gemm"
+                    timer = CudaEventTimer(timer_name)
                     CudaEventTimerCollection.append(timer)
                     timer.start()
                     dgrad, _, _ = gemm(
@@ -597,7 +599,8 @@ class _Linear(torch.autograd.Function):
                         )
                 else:
                     # WGRAD
-                    timer = CudaEventTimer("backward_gemm")
+                    timer_name = "backward_CPL_gemm" if parallel_mode == "column" else "backward_RPL_gemm"
+                    timer = CudaEventTimer(timer_name)
                     CudaEventTimerCollection.append(timer)
                     timer.start()
                     wgrad, grad_bias, _ = gemm(
